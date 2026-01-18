@@ -1,4 +1,4 @@
-name: Build IPA (FullScreen Fix)
+name: Build IPA (Final Fullscreen)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ env:
   BUNDLE_ID: "com.tavern.ios"
   # 你的酒馆地址
   TARGET_URL: "http://100.86.55.29:8000"
-  VERSION: "1.0.2"
+  VERSION: "1.0.3"
 
 jobs:
   build:
@@ -26,8 +26,7 @@ jobs:
           mkdir -p App/Resources
           mkdir -p App/Resources/Base.lproj
 
-      # ⭐️ 修复核心 1：生成 LaunchScreen.storyboard (解决上下黑边)
-      # 这是一个标准的空白启动页 XML，有了它，iOS 就知道要全屏运行了
+      # ⭐️ 关键修复：生成启动画面文件 (彻底消灭上下黑边！)
       - name: Generate Launch Screen
         run: |
           cat > App/Resources/Base.lproj/LaunchScreen.storyboard <<EOF
@@ -48,7 +47,6 @@ jobs:
                                   <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                                   <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                                   <color key="backgroundColor" white="0.0" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
-                                  <viewLayoutGuide key="safeArea" id="6Tk-OE-BBY"/>
                               </view>
                           </viewController>
                           <placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1" userLabel="First Responder" sceneMemberID="firstResponder"/>
@@ -59,13 +57,12 @@ jobs:
           </document>
           EOF
 
-      # 生成图标 (保持不变)
       - name: Generate Icon
         run: |
           echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" | base64 -d > App/Resources/AppIcon.png
           sips -z 1024 1024 App/Resources/AppIcon.png --out App/Resources/Icon1024.png
 
-      # ⭐️ 修复核心 2：增强 Swift 代码的全屏能力
+      # ⭐️ 核心代码：融合了你的全屏补丁 + UI全屏逻辑
       - name: Write Swift Code
         run: |
           cat > App/Sources/SillyTavernApp.swift <<EOF
@@ -86,14 +83,13 @@ jobs:
 
           struct ContentView: View {
               var body: some View {
-                  // ZStack 配合黑色背景，防止加载瞬间白屏
                   ZStack {
-                      Color.black.ignoresSafeArea()
+                      Color.black.ignoresSafeArea() // 背景全黑防白屏
                       WebView(url: URL(string: "${{ env.TARGET_URL }}")!)
-                          .ignoresSafeArea() // ⭐️ 强制忽略所有安全区 (刘海/底部黑条)
+                          .ignoresSafeArea() // ⭐️ 这里的 ignoresSafeArea 配合 LaunchScreen 才能真正生效
                   }
-                  .statusBar(hidden: true) // 隐藏状态栏
-                  .persistentSystemOverlays(.hidden) // 隐藏底部横条 (iOS 16+)
+                  .statusBar(hidden: true)
+                  .persistentSystemOverlays(.hidden)
               }
           }
 
@@ -102,25 +98,32 @@ jobs:
               func makeUIView(context: Context) -> WKWebView {
                   let config = WKWebViewConfiguration()
                   config.allowsInlineMediaPlayback = true
+                  config.allowsPictureInPictureMediaPlayback = true
                   
+                  // 开启 iOS 原生全屏支持
+                  if #available(iOS 15.4, *) {
+                      config.preferences.isElementFullscreenEnabled = true
+                  }
+
                   let webView = WKWebView(frame: .zero, configuration: config)
                   
-                  // 1. 禁止橡皮筋回弹 (让手感更像原生App)
+                  // 1. 禁止回弹，手感更像原生
                   webView.scrollView.bounces = false
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
                   
-                  // 2. 注入 CSS/JS 强制铺满
-                  // 这里的 viewport-fit=cover 是消除网页内部白边的关键
+                  // 2. 注入 JS：这里融合了你的代码！
+                  // viewport-fit=cover 是消除刘海白边的关键
                   let scriptString = """
                   var meta = document.createElement('meta');
                   meta.name = 'viewport';
                   meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
                   document.head.appendChild(meta);
                   
-                  // 强制背景全黑
-                  var style = document.createElement('style');
-                  style.innerHTML = 'body { background-color: #000; }';
-                  document.head.appendChild(style);
+                  // ⭐️ 这是你刚才提供的代码，我把它放在这里了
+                  if (document.documentElement.webkitRequestFullscreen) {
+                      document.documentElement.requestFullscreen = document.documentElement.webkitRequestFullscreen;
+                      Element.prototype.requestFullscreen = Element.prototype.webkitRequestFullscreen || Element.prototype.webkitEnterFullscreen;
+                  }
                   """
                   let userScript = WKUserScript(source: scriptString, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
                   webView.configuration.userContentController.addUserScript(userScript)
@@ -133,7 +136,6 @@ jobs:
           }
           EOF
 
-      # ⭐️ 修复核心 3：配置项目引用 LaunchScreen
       - name: Generate Project File
         run: |
           cat > project.yml <<EOF
@@ -154,16 +156,16 @@ jobs:
                 CODE_SIGNING_ALLOWED: "NO"
                 CODE_SIGNING_REQUIRED: "NO"
                 ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-                # ⭐️ 关键：告诉项目使用我们刚刚生成的启动画面
+                # ⭐️ 关键：绑定启动画面
                 INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
               info:
                 path: Info.plist
                 properties:
                   NSAppTransportSecurity:
                     NSAllowsArbitraryLoads: true
-                  # 强制全屏配置
                   UIStatusBarHidden: true
                   UIViewControllerBasedStatusBarAppearance: false
+                  # ⭐️ 关键：绑定启动画面
                   UILaunchStoryboardName: LaunchScreen
           EOF
           
@@ -191,5 +193,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SillyTavern-FullScreen-IPA
+          name: SillyTavern-Perfect-IPA
           path: "*.ipa"
