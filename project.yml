@@ -1,0 +1,21 @@
+name: SillyTavern
+options:
+  bundleIdPrefix: com.yourname
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  SillyTavern:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.tavern.fullscreen
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGNING_REQUIRED: NO
+    info:
+      path: Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
