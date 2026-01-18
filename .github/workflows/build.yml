@@ -1,4 +1,4 @@
-name: Build IPA (Final Fullscreen)
+name: Build IPA (Real Fullscreen)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ env:
   BUNDLE_ID: "com.tavern.ios"
   # 你的酒馆地址
   TARGET_URL: "http://100.86.55.29:8000"
-  VERSION: "1.0.3"
+  VERSION: "1.0.4"
 
 jobs:
   build:
@@ -26,7 +26,7 @@ jobs:
           mkdir -p App/Resources
           mkdir -p App/Resources/Base.lproj
 
-      # ⭐️ 关键修复：生成启动画面文件 (彻底消灭上下黑边！)
+      # 1. 启动画面 (必须保留，用于消除上下原始黑边)
       - name: Generate Launch Screen
         run: |
           cat > App/Resources/Base.lproj/LaunchScreen.storyboard <<EOF
@@ -62,7 +62,7 @@ jobs:
           echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" | base64 -d > App/Resources/AppIcon.png
           sips -z 1024 1024 App/Resources/AppIcon.png --out App/Resources/Icon1024.png
 
-      # ⭐️ 核心代码：融合了你的全屏补丁 + UI全屏逻辑
+      # 2. Swift 代码 (关键修改：移除了 requestFullscreen，改用纯布局全屏)
       - name: Write Swift Code
         run: |
           cat > App/Sources/SillyTavernApp.swift <<EOF
@@ -84,12 +84,15 @@ jobs:
           struct ContentView: View {
               var body: some View {
                   ZStack {
-                      Color.black.ignoresSafeArea() // 背景全黑防白屏
+                      // 黑色背景垫底，防止边缘漏光
+                      Color.black.ignoresSafeArea()
+                      
+                      // 网页视图：强制铺满，忽略刘海和Home条安全区
                       WebView(url: URL(string: "${{ env.TARGET_URL }}")!)
-                          .ignoresSafeArea() // ⭐️ 这里的 ignoresSafeArea 配合 LaunchScreen 才能真正生效
+                          .ignoresSafeArea() 
                   }
-                  .statusBar(hidden: true)
-                  .persistentSystemOverlays(.hidden)
+                  .statusBar(hidden: true) // 隐藏系统状态栏
+                  .persistentSystemOverlays(.hidden) // 隐藏底部Home横条 (iOS 16+)
               }
           }
 
@@ -98,34 +101,30 @@ jobs:
               func makeUIView(context: Context) -> WKWebView {
                   let config = WKWebViewConfiguration()
                   config.allowsInlineMediaPlayback = true
-                  config.allowsPictureInPictureMediaPlayback = true
                   
-                  // 开启 iOS 原生全屏支持
-                  if #available(iOS 15.4, *) {
-                      config.preferences.isElementFullscreenEnabled = true
-                  }
-
+                  // 注意：这里我们故意【不】开启 elementFullscreen，防止系统接管
+                  
                   let webView = WKWebView(frame: .zero, configuration: config)
                   
-                  // 1. 禁止回弹，手感更像原生
+                  // 1. 禁止页面回弹 (关键手感优化)
                   webView.scrollView.bounces = false
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
+                  webView.isOpaque = false
+                  webView.backgroundColor = .black
                   
-                  // 2. 注入 JS：这里融合了你的代码！
-                  // viewport-fit=cover 是消除刘海白边的关键
-                  let scriptString = """
+                  // 2. 注入 Viewport 修正补丁 (解决黑边和刘海问题的核心)
+                  let cssPatch = """
                   var meta = document.createElement('meta');
                   meta.name = 'viewport';
                   meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
                   document.head.appendChild(meta);
                   
-                  // ⭐️ 这是你刚才提供的代码，我把它放在这里了
-                  if (document.documentElement.webkitRequestFullscreen) {
-                      document.documentElement.requestFullscreen = document.documentElement.webkitRequestFullscreen;
-                      Element.prototype.requestFullscreen = Element.prototype.webkitRequestFullscreen || Element.prototype.webkitEnterFullscreen;
-                  }
+                  var style = document.createElement('style');
+                  style.innerHTML = 'body, html { width: 100%; height: 100%; margin: 0; padding: 0; background-color: #000; overflow-x: hidden; }';
+                  document.head.appendChild(style);
                   """
-                  let userScript = WKUserScript(source: scriptString, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+                  
+                  let userScript = WKUserScript(source: cssPatch, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
                   webView.configuration.userContentController.addUserScript(userScript)
                   
                   let request = URLRequest(url: url)
@@ -156,7 +155,6 @@ jobs:
                 CODE_SIGNING_ALLOWED: "NO"
                 CODE_SIGNING_REQUIRED: "NO"
                 ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-                # ⭐️ 关键：绑定启动画面
                 INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
               info:
                 path: Info.plist
@@ -165,7 +163,6 @@ jobs:
                     NSAllowsArbitraryLoads: true
                   UIStatusBarHidden: true
                   UIViewControllerBasedStatusBarAppearance: false
-                  # ⭐️ 关键：绑定启动画面
                   UILaunchStoryboardName: LaunchScreen
           EOF
           
@@ -193,5 +190,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SillyTavern-Perfect-IPA
+          name: SillyTavern-PureFullscreen-IPA
           path: "*.ipa"
