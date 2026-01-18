@@ -1,4 +1,4 @@
-name: Build IPA (Real Fullscreen)
+name: Build IPA (Card Fullscreen)
 
 on:
   workflow_dispatch:
@@ -6,9 +6,8 @@ on:
 env:
   APP_NAME: "SillyTavern"
   BUNDLE_ID: "com.tavern.ios"
-  # 你的酒馆地址
   TARGET_URL: "http://100.86.55.29:8000"
-  VERSION: "1.0.4"
+  VERSION: "1.0.7"
 
 jobs:
   build:
@@ -26,7 +25,7 @@ jobs:
           mkdir -p App/Resources
           mkdir -p App/Resources/Base.lproj
 
-      # 1. 启动画面 (必须保留，用于消除上下原始黑边)
+      # 1. 启动画面 (必须保留，保证App底子是全屏的)
       - name: Generate Launch Screen
         run: |
           cat > App/Resources/Base.lproj/LaunchScreen.storyboard <<EOF
@@ -62,7 +61,7 @@ jobs:
           echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" | base64 -d > App/Resources/AppIcon.png
           sips -z 1024 1024 App/Resources/AppIcon.png --out App/Resources/Icon1024.png
 
-      # 2. Swift 代码 (关键修改：移除了 requestFullscreen，改用纯布局全屏)
+      # 2. 注入 JS 补丁 (核心修改)
       - name: Write Swift Code
         run: |
           cat > App/Sources/SillyTavernApp.swift <<EOF
@@ -84,15 +83,12 @@ jobs:
           struct ContentView: View {
               var body: some View {
                   ZStack {
-                      // 黑色背景垫底，防止边缘漏光
                       Color.black.ignoresSafeArea()
-                      
-                      // 网页视图：强制铺满，忽略刘海和Home条安全区
                       WebView(url: URL(string: "${{ env.TARGET_URL }}")!)
                           .ignoresSafeArea() 
                   }
-                  .statusBar(hidden: true) // 隐藏系统状态栏
-                  .persistentSystemOverlays(.hidden) // 隐藏底部Home横条 (iOS 16+)
+                  .statusBar(hidden: true)
+                  .persistentSystemOverlays(.hidden)
               }
           }
 
@@ -102,29 +98,68 @@ jobs:
                   let config = WKWebViewConfiguration()
                   config.allowsInlineMediaPlayback = true
                   
-                  // 注意：这里我们故意【不】开启 elementFullscreen，防止系统接管
-                  
                   let webView = WKWebView(frame: .zero, configuration: config)
-                  
-                  // 1. 禁止页面回弹 (关键手感优化)
                   webView.scrollView.bounces = false
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
                   webView.isOpaque = false
                   webView.backgroundColor = .black
                   
-                  // 2. 注入 Viewport 修正补丁 (解决黑边和刘海问题的核心)
-                  let cssPatch = """
+                  // ⭐️ JS 全屏补丁：自己实现全屏逻辑，绕过系统限制
+                  let scriptString = """
+                  // 1. 设置视口
                   var meta = document.createElement('meta');
                   meta.name = 'viewport';
                   meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
                   document.head.appendChild(meta);
                   
+                  // 2. CSS 样式补丁：定义一个全屏类
                   var style = document.createElement('style');
-                  style.innerHTML = 'body, html { width: 100%; height: 100%; margin: 0; padding: 0; background-color: #000; overflow-x: hidden; }';
+                  style.innerHTML = `
+                    .ios-fake-fullscreen {
+                        position: fixed !important;
+                        top: 0 !important;
+                        left: 0 !important;
+                        width: 100vw !important;
+                        height: 100vh !important;
+                        z-index: 2147483647 !important; /* 层级设为最高 */
+                        background-color: black !important;
+                        object-fit: contain !important; /* 保持比例 */
+                        display: flex !important;
+                        align-items: center !important;
+                        justify-content: center !important;
+                    }
+                  `;
                   document.head.appendChild(style);
+
+                  // 3. 劫持 requestFullscreen 方法
+                  // 当网页里的前端卡请求全屏时，我们不调系统API，而是直接给它加个样式
+                  Element.prototype.requestFullscreen = function() {
+                      this.dataset.originalStyle = this.style.cssText; // 保存原有样式
+                      this.classList.add('ios-fake-fullscreen'); // 加上全屏样式
+                      
+                      // 告诉网页：全屏已经变了 (模拟事件)
+                      document.dispatchEvent(new Event('fullscreenchange'));
+                      document.dispatchEvent(new Event('webkitfullscreenchange'));
+                      return Promise.resolve();
+                  };
+                  
+                  // 兼容 webkit 前缀
+                  Element.prototype.webkitRequestFullscreen = Element.prototype.requestFullscreen;
+
+                  // 4. 劫持退出全屏
+                  document.exitFullscreen = function() {
+                      var elements = document.querySelectorAll('.ios-fake-fullscreen');
+                      elements.forEach(function(el) {
+                          el.classList.remove('ios-fake-fullscreen');
+                      });
+                      document.dispatchEvent(new Event('fullscreenchange'));
+                      document.dispatchEvent(new Event('webkitfullscreenchange'));
+                      return Promise.resolve();
+                  };
+                  document.webkitExitFullscreen = document.exitFullscreen;
                   """
                   
-                  let userScript = WKUserScript(source: cssPatch, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+                  let userScript = WKUserScript(source: scriptString, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
                   webView.configuration.userContentController.addUserScript(userScript)
                   
                   let request = URLRequest(url: url)
@@ -190,5 +225,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SillyTavern-PureFullscreen-IPA
+          name: SillyTavern-CardFix-IPA
           path: "*.ipa"
