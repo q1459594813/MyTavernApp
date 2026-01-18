@@ -1,4 +1,4 @@
-name: Build IPA (Card Fullscreen)
+name: Build IPA (Gesture Fix)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ env:
   APP_NAME: "SillyTavern"
   BUNDLE_ID: "com.tavern.ios"
   TARGET_URL: "http://100.86.55.29:8000"
-  VERSION: "1.0.7"
+  VERSION: "1.0.8"
 
 jobs:
   build:
@@ -25,7 +25,7 @@ jobs:
           mkdir -p App/Resources
           mkdir -p App/Resources/Base.lproj
 
-      # 1. 启动画面 (必须保留，保证App底子是全屏的)
+      # 1. 启动画面 (必须有，这是物理全屏的基础)
       - name: Generate Launch Screen
         run: |
           cat > App/Resources/Base.lproj/LaunchScreen.storyboard <<EOF
@@ -61,7 +61,7 @@ jobs:
           echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" | base64 -d > App/Resources/AppIcon.png
           sips -z 1024 1024 App/Resources/AppIcon.png --out App/Resources/Icon1024.png
 
-      # 2. 注入 JS 补丁 (核心修改)
+      # 2. 核心代码：注入“完美伪装”的全屏补丁
       - name: Write Swift Code
         run: |
           cat > App/Sources/SillyTavernApp.swift <<EOF
@@ -98,21 +98,22 @@ jobs:
                   let config = WKWebViewConfiguration()
                   config.allowsInlineMediaPlayback = true
                   
+                  // ⚠️ 关键点：显式禁止系统接管全屏
+                  // 这会迫使网页只能通过我们注入的 JS 逻辑来运行，彻底断绝“下滑退出”的可能性
+                  config.preferences.javaScriptCanOpenWindowsAutomatically = true
+                  if #available(iOS 15.4, *) {
+                      config.preferences.isElementFullscreenEnabled = false 
+                  }
+                  
                   let webView = WKWebView(frame: .zero, configuration: config)
                   webView.scrollView.bounces = false
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
                   webView.isOpaque = false
                   webView.backgroundColor = .black
                   
-                  // ⭐️ JS 全屏补丁：自己实现全屏逻辑，绕过系统限制
+                  // ⭐️ JS 终极全屏补丁
                   let scriptString = """
-                  // 1. 设置视口
-                  var meta = document.createElement('meta');
-                  meta.name = 'viewport';
-                  meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
-                  document.head.appendChild(meta);
-                  
-                  // 2. CSS 样式补丁：定义一个全屏类
+                  // 1. 样式补丁
                   var style = document.createElement('style');
                   style.innerHTML = `
                     .ios-fake-fullscreen {
@@ -121,9 +122,10 @@ jobs:
                         left: 0 !important;
                         width: 100vw !important;
                         height: 100vh !important;
-                        z-index: 2147483647 !important; /* 层级设为最高 */
+                        z-index: 99999999 !important;
                         background-color: black !important;
-                        object-fit: contain !important; /* 保持比例 */
+                        margin: 0 !important;
+                        padding: 0 !important;
                         display: flex !important;
                         align-items: center !important;
                         justify-content: center !important;
@@ -131,35 +133,53 @@ jobs:
                   `;
                   document.head.appendChild(style);
 
-                  // 3. 劫持 requestFullscreen 方法
-                  // 当网页里的前端卡请求全屏时，我们不调系统API，而是直接给它加个样式
-                  Element.prototype.requestFullscreen = function() {
-                      this.dataset.originalStyle = this.style.cssText; // 保存原有样式
-                      this.classList.add('ios-fake-fullscreen'); // 加上全屏样式
+                  // 2. 定义伪装函数
+                  function fakeEnterFullscreen() {
+                      // 给当前元素加样式
+                      this.classList.add('ios-fake-fullscreen');
                       
-                      // 告诉网页：全屏已经变了 (模拟事件)
-                      document.dispatchEvent(new Event('fullscreenchange'));
-                      document.dispatchEvent(new Event('webkitfullscreenchange'));
+                      // 欺骗前端：发送所有可能的成功信号
+                      // 很多卡片实际上是监听 video 的 webkitbeginfullscreen 事件
+                      var evt1 = new Event('webkitbeginfullscreen');
+                      this.dispatchEvent(evt1);
+                      
+                      var evt2 = new Event('fullscreenchange');
+                      document.dispatchEvent(evt2);
+                      
+                      var evt3 = new Event('webkitfullscreenchange');
+                      document.dispatchEvent(evt3);
+                      
                       return Promise.resolve();
-                  };
-                  
-                  // 兼容 webkit 前缀
-                  Element.prototype.webkitRequestFullscreen = Element.prototype.requestFullscreen;
+                  }
 
-                  // 4. 劫持退出全屏
-                  document.exitFullscreen = function() {
-                      var elements = document.querySelectorAll('.ios-fake-fullscreen');
-                      elements.forEach(function(el) {
+                  function fakeExitFullscreen() {
+                      var els = document.querySelectorAll('.ios-fake-fullscreen');
+                      els.forEach(el => {
                           el.classList.remove('ios-fake-fullscreen');
+                          // 发送退出信号
+                          el.dispatchEvent(new Event('webkitendfullscreen'));
                       });
+                      
                       document.dispatchEvent(new Event('fullscreenchange'));
                       document.dispatchEvent(new Event('webkitfullscreenchange'));
                       return Promise.resolve();
-                  };
-                  document.webkitExitFullscreen = document.exitFullscreen;
+                  }
+
+                  // 3. 暴力劫持所有 API
+                  // 不管它调的是 video 专用还是普通 dom 专用，全部拦截
+                  HTMLElement.prototype.requestFullscreen = fakeEnterFullscreen;
+                  HTMLElement.prototype.webkitRequestFullscreen = fakeEnterFullscreen;
+                  
+                  // 针对 Video 标签的特殊劫持 (这是很多前端卡的核心)
+                  HTMLVideoElement.prototype.webkitEnterFullscreen = fakeEnterFullscreen;
+                  HTMLVideoElement.prototype.enterFullscreen = fakeEnterFullscreen;
+
+                  // 劫持退出
+                  document.exitFullscreen = fakeExitFullscreen;
+                  document.webkitExitFullscreen = fakeExitFullscreen;
                   """
                   
-                  let userScript = WKUserScript(source: scriptString, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+                  let userScript = WKUserScript(source: scriptString, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
                   webView.configuration.userContentController.addUserScript(userScript)
                   
                   let request = URLRequest(url: url)
@@ -225,5 +245,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SillyTavern-CardFix-IPA
+          name: SillyTavern-NoGesture-IPA
           path: "*.ipa"
