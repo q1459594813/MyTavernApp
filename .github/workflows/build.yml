@@ -1,0 +1,39 @@
+name: Build FullScreen IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      
+      - name: Generate Project
+        run: xcodegen generate
+
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project SillyTavern.xcodeproj \
+            -scheme SillyTavern \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath ./SillyTavern.xcarchive \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r ./SillyTavern.xcarchive/Products/Applications/*.app Payload/
+          zip -r SillyTavern.ipa Payload
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: SillyTavern-FullScreen-IPA
+          path: SillyTavern.ipa
