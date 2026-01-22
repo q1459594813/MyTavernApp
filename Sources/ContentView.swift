@@ -5,8 +5,8 @@ import WebKit
 struct TavernApp: App {
     var body: some Scene {
         WindowGroup {
-            // ✅ 1. 网址已更换为你的 Tailscale HTTPS 地址（解决存档问题）
-            TavernWebView(url: URL(string: "https://beautifulboy854.tail625b3f.ts.net")!)
+            // ✅ 使用你的新域名
+            TavernWebView(url: URL(string: "https://songbirdtavern.top")!)
                 .edgesIgnoringSafeArea(.all)
         }
     }
@@ -15,7 +15,6 @@ struct TavernApp: App {
 struct TavernWebView: UIViewRepresentable {
     let url: URL
 
-    // ✅ 2. 添加协调器，用于处理网页弹窗
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
@@ -23,33 +22,60 @@ struct TavernWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
-
+        
         let webView = WKWebView(frame: .zero, configuration: config)
         
-        // ✅ 3. 核心修改：绑定代理，让网页能弹出提示和确认框
-        webView.uiDelegate = context.coordinator 
+        webView.uiDelegate = context.coordinator
+        webView.navigationDelegate = context.coordinator 
         
-        webView.scrollView.bounces = false
+        // 注入“防缩放”和“防异常刷新”脚本
+        let injectionScript = """
+        (function() {
+            var style = document.createElement('style');
+            style.innerHTML = 'html, body { touch-action: pan-x pan-y !important; -webkit-text-size-adjust: 100% !important; }';
+            document.head.appendChild(style);
+
+            // 拦截双指缩放手势
+            document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
+            
+            // 解决你说的刷新问题：防止在关键操作时页面重载
+            var loadTime = Date.now();
+            var _reload = window.location.reload;
+            window.location.reload = function() {
+                if (Date.now() - loadTime < 3000) return; // 3秒内禁止自动刷新
+                _reload.call(window.location);
+            };
+        })();
+        """
+        let script = WKUserScript(source: injectionScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        config.userContentController.addUserScript(script)
+
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
-    // ✅ 4. 弹窗处理类（解决删除、确认、报错无反应的问题）
-    class Coordinator: NSObject, WKUIDelegate {
+    class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate {
         var parent: TavernWebView
         init(_ parent: TavernWebView) { self.parent = parent }
 
-        // 处理提示框 (Alert)
+        // 处理证书信任（即便有正式域名，在 App 内也建议保留此段以提高稳定性）
+        func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+            if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+                completionHandler(.useCredential, URLCredential(trust: challenge.protectionSpace.serverTrust!))
+            } else {
+                completionHandler(.performDefaultHandling, nil)
+            }
+        }
+
+        // 处理 JS 弹窗 (Alert/Confirm)
         func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
             let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in completionHandler() })
             present(alert)
         }
 
-        // 处理确认框 (Confirm) - 解决删除角色、保存提示没反应的问题
         func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
             let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completionHandler(false) })
@@ -57,7 +83,6 @@ struct TavernWebView: UIViewRepresentable {
             present(alert)
         }
         
-        // 辅助方法：显示弹窗
         private func present(_ alert: UIAlertController) {
             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let rootVC = windowScene.windows.first?.rootViewController {
